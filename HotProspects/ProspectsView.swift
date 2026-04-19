@@ -11,17 +11,57 @@ import SwiftUI
 import UserNotifications
 internal import AVFoundation
 
+private enum ProspectSortOrder: String, CaseIterable {
+    case name
+    case recent
+
+    var menuLabel: String {
+        switch self {
+        case .name: "Name"
+        case .recent: "Most recent"
+        }
+    }
+
+    var sortDescriptors: [SortDescriptor<Prospect>] {
+        switch self {
+        case .name:
+            [SortDescriptor(\Prospect.name)]
+        case .recent:
+            [SortDescriptor(\Prospect.createdAt, order: .reverse)]
+        }
+    }
+}
+
 struct ProspectsView: View {
     enum FilterType {
         case none, contacted, uncontacted
     }
 
-    @Query(sort: \Prospect.name) var prospects: [Prospect]
+    @AppStorage("prospectSortOrder") private var sortOrderRaw = ProspectSortOrder.name.rawValue
+    let filter: FilterType
+
+    private var sortOrder: ProspectSortOrder {
+        ProspectSortOrder(rawValue: sortOrderRaw) ?? .name
+    }
+
+    var body: some View {
+        ProspectsListContent(filter: filter, sortOrder: sortOrder, sortOrderRaw: $sortOrderRaw)
+            .id(sortOrder)
+    }
+
+    init(filter: FilterType) {
+        self.filter = filter
+    }
+}
+
+private struct ProspectsListContent: View {
+    @Query var prospects: [Prospect]
     @Environment(\.modelContext) var modelContext
     @State private var selectedProspects = Set<Prospect>()
     @State private var isShowingScanner = false
 
-    let filter: FilterType
+    let filter: ProspectsView.FilterType
+    @Binding var sortOrderRaw: String
 
     var title: String {
         switch filter {
@@ -37,11 +77,23 @@ struct ProspectsView: View {
     var body: some View {
         NavigationStack {
             List(prospects, selection: $selectedProspects) { prospect in
-                VStack(alignment: .leading) {
-                    Text(prospect.name)
-                        .font(.headline)
-                    Text(prospect.emailAddress)
-                        .foregroundStyle(.secondary)
+                NavigationLink {
+                    EditProspectView(prospect: prospect)
+                } label: {
+                    HStack(alignment: .center, spacing: 12) {
+                        if filter == .none {
+                            Image(systemName: prospect.isContacted ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.xmark")
+                                .font(.title2)
+                                .foregroundStyle(prospect.isContacted ? .green : .secondary)
+                                .accessibilityLabel(prospect.isContacted ? "Contacted" : "Not contacted")
+                        }
+                        VStack(alignment: .leading) {
+                            Text(prospect.name)
+                                .font(.headline)
+                            Text(prospect.emailAddress)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .swipeActions {
                     Button("Delete", systemImage: "trash", role: .destructive) {
@@ -69,7 +121,15 @@ struct ProspectsView: View {
             }
             .navigationTitle(title)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu("Sort", systemImage: "arrow.up.arrow.down") {
+                        Picker("Sort by", selection: $sortOrderRaw) {
+                            ForEach(ProspectSortOrder.allCases, id: \.rawValue) { order in
+                                Text(order.menuLabel).tag(order.rawValue)
+                            }
+                        }
+                    }
+
                     Button("Scan", systemImage: "qrcode.viewfinder") {
                         isShowingScanner = true
                     }
@@ -89,17 +149,23 @@ struct ProspectsView: View {
                 CodeScannerView(codeTypes: [.qr], simulatedData: "Paul Hudson\npaul@hackingwithswift.com", completion: handleScan)
             }
         }
+        .toolbar(selectedProspects.isEmpty ? .automatic : .hidden, for: .tabBar)
     }
 
-    init(filter: FilterType) {
+    init(filter: ProspectsView.FilterType, sortOrder: ProspectSortOrder, sortOrderRaw: Binding<String>) {
         self.filter = filter
+        _sortOrderRaw = sortOrderRaw
+
+        let descriptors = sortOrder.sortDescriptors
 
         if filter != .none {
             let showContactedOnly = filter == .contacted
 
             _prospects = Query(filter: #Predicate {
                 $0.isContacted == showContactedOnly
-            }, sort: [SortDescriptor(\Prospect.name)])
+            }, sort: descriptors)
+        } else {
+            _prospects = Query(sort: descriptors)
         }
     }
 
